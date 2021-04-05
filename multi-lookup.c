@@ -114,6 +114,7 @@ int main(int argc, char *argv[]) {
 	prodLog = argv[3];
 	consLog = argv[4];
 	/////////////////////////////////////////////////////
+	remove(prodLog); remove(consLog); //erase logfiles if they exist
 	for (int i = 0; i < numFiles; ++i) {files[i] = argv[i+5];} //parse provided files into an array
 
 	pthread_t producer_threads[numProd]; //name producer and consumer threads

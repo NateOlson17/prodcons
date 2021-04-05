@@ -11,6 +11,7 @@ sem_t mutex;
 //eliminate segfault (getting negative itemsInBuffer/filesServiced?)
 //must be caused by race condition somehow...
 //need to readjust mutexen (in producer?)
+//ensure it is NOT SEQUENTIAL (can't fill shared array, drain shared array, repeat - must be interspliced)
 
 void* consumer(void *args) {
 	struct cthread_arg_struct *arguments = (struct cthread_arg_struct*) args; //cast to usable format

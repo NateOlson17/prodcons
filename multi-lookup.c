@@ -8,9 +8,9 @@
 
 sem_t mutex;
 
-//eliminate segfault (getting negative itemsInBuffer?)
-//also getting out of range filesServiced
+//eliminate segfault (getting negative itemsInBuffer/filesServiced?)
 //must be caused by race condition somehow...
+//need to readjust mutexen (in producer?)
 
 void* consumer(void *args) {
 	struct cthread_arg_struct *arguments = (struct cthread_arg_struct*) args; //cast to usable format
@@ -22,7 +22,6 @@ void* consumer(void *args) {
 	//char* ipStr;
 	int hostnamesResolved = 0;
 	while (*(arguments->filesServiced) < *(arguments->numFiles) || *(arguments->itemsInBuffer) > 0) { //while producer threads are still working or the buffer is not empty
-		printf("thread <%lu> (CONSUMER) Processing hostnames -- Files serviced: %d of %d\n", pthread_self(), *(arguments->filesServiced), *(arguments->numFiles));
 		while (*(arguments->itemsInBuffer) == 0 && *(arguments->filesServiced) < *(arguments->numFiles)); //wait while buffer is empty and producers are still working
 		sem_wait(&mutex);
 		//strncpy(hostnameBuf, arguments->buffer + 255 * (*(arguments->itemsInBuffer) - 1), MAX_NAME_LENGTH); //copy hostname to hostnameBuf
@@ -74,12 +73,13 @@ void* producer(void *args) {
 				//strncpy(arguments->buffer + 255 * *(arguments->itemsInBuffer), linebuf, len); //if space exists in buffer, print hostname to proper "slot"
 				*(arguments->itemsInBuffer) = *(arguments->itemsInBuffer) + 1; //increment itemsInBuffer accordingly
 				printf("---->Added item to buffer, currently %d items\n", *(arguments->itemsInBuffer));
+				sem_post(&mutex);
 			} else {
-				sem_wait(&mutex);
 				fprintf(stderr, "Hostname length of %lu is longer than maximum allowed length %d\n", len, MAX_NAME_LENGTH);
 			}
 
 		}
+		sem_wait(&mutex);
 		fclose(readfile);
 		thread_filesServiced++;
 		*(arguments->filesServiced) = *(arguments->filesServiced) + 1;

@@ -10,6 +10,7 @@ sem_t mutex;
 
 //eliminate segfault (getting negative itemsInBuffer?)
 //also getting out of range filesServiced
+//must be caused by race condition somehow...
 
 void* consumer(void *args) {
 	struct cthread_arg_struct *arguments = (struct cthread_arg_struct*) args; //cast to usable format
@@ -24,7 +25,7 @@ void* consumer(void *args) {
 		printf("thread <%lu> (CONSUMER) Processing hostnames -- Files serviced: %d of %d\n", pthread_self(), *(arguments->filesServiced), *(arguments->numFiles));
 		while (*(arguments->itemsInBuffer) == 0 && *(arguments->filesServiced) < *(arguments->numFiles)); //wait while buffer is empty and producers are still working
 		sem_wait(&mutex);
-		strncpy(hostnameBuf, arguments->buffer + 255 * (*(arguments->itemsInBuffer) - 1), MAX_NAME_LENGTH); //copy hostname to hostnameBuf
+		//strncpy(hostnameBuf, arguments->buffer + 255 * (*(arguments->itemsInBuffer) - 1), MAX_NAME_LENGTH); //copy hostname to hostnameBuf
 		//printf("Processing hostname: %s\n", hostnameBuf);
 		//dnslookup(hostnameBuf, ipStr, 255);
 		//fprintf(logfile, "%s, %s", hostnameBuf, ipStr);
@@ -58,7 +59,7 @@ void* producer(void *args) {
 	sem_post(&mutex);
 	while (*(arguments->filesServiced) < *(arguments->numFiles)) { //while there are still files to be processed
 		sem_wait(&mutex);
-		printf("thread <%lu> (PRODUCER) Processing hostnames from %s and logging to %s -- Files serviced: %d\n", pthread_self(), arguments->files[arguments->currFileNum], arguments->prodLog, *(arguments->filesServiced));
+		printf("thread <%lu> (PRODUCER) Processing hostnames from %s and logging to %s\n", pthread_self(), arguments->files[arguments->currFileNum], arguments->prodLog);
 		*(arguments->filesAssigned) = *(arguments->filesAssigned) + 1;
 		sem_post(&mutex);
 		readfile = fopen(arguments->files[arguments->currFileNum], "r");
@@ -67,11 +68,9 @@ void* producer(void *args) {
 		len = 0;
 		while (getline(&linebuf, &len, readfile) != -1) { //read input file line by line
 			if (len <= MAX_NAME_LENGTH) { //verify that length of hostname is valid
+				while (*(arguments->itemsInBuffer) > 9); //wait for space to open up in shared array
 				sem_wait(&mutex);
-				fprintf(logfile, "%s", linebuf); //log to logfile
-				sem_post(&mutex);
-				while (*(arguments->itemsInBuffer) >= 10); //wait for space to open up in shared array
-				sem_wait(&mutex); //SEGFAULT LINE ALWAYS
+				fprintf(logfile, "%s", linebuf);
 				//strncpy(arguments->buffer + 255 * *(arguments->itemsInBuffer), linebuf, len); //if space exists in buffer, print hostname to proper "slot"
 				*(arguments->itemsInBuffer) = *(arguments->itemsInBuffer) + 1; //increment itemsInBuffer accordingly
 				printf("---->Added item to buffer, currently %d items\n", *(arguments->itemsInBuffer));
@@ -87,9 +86,9 @@ void* producer(void *args) {
 		thread_filesServiced++;
 		sem_wait(&mutex);
 		*(arguments->filesServiced) = *(arguments->filesServiced) + 1;
-		sem_post(&mutex);
-
+		printf("---->Serviced file, currently %d of %d serviced\n", *(arguments->filesServiced), *(arguments->numFiles));
 		arguments->currFileNum = *(arguments->filesServiced);
+		sem_post(&mutex);
 	}
 
 	fclose(logfile);

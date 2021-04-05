@@ -75,17 +75,14 @@ void* producer(void *args) {
 				//strncpy(arguments->buffer + 255 * *(arguments->itemsInBuffer), linebuf, len); //if space exists in buffer, print hostname to proper "slot"
 				*(arguments->itemsInBuffer) = *(arguments->itemsInBuffer) + 1; //increment itemsInBuffer accordingly
 				printf("---->Added item to buffer, currently %d items\n", *(arguments->itemsInBuffer));
-				sem_post(&mutex);
 			} else {
 				sem_wait(&mutex);
 				fprintf(stderr, "Hostname length of %lu is longer than maximum allowed length %d\n", len, MAX_NAME_LENGTH);
-				sem_post(&mutex);
 			}
 
 		}
 		fclose(readfile);
 		thread_filesServiced++;
-		sem_wait(&mutex);
 		*(arguments->filesServiced) = *(arguments->filesServiced) + 1;
 		sem_post(&mutex);
 

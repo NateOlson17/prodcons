@@ -5,53 +5,51 @@
 #include <string.h>
 #include <sys/time.h>
 #include "multi-lookup.h"
+#include "util.h"
 
 sem_t mutex;
 
-//eliminate segfault (getting negative itemsInBuffer/out of bounds filesServiced?)
-//must be caused by race condition somehow...
-//need to readjust mutexen (in producer?)
-//ensure it is NOT SERIALIZED (can't fill shared array, drain shared array, repeat - must be interspliced)
-
 void* consumer(void *args) {
 	struct cthread_arg_struct *arguments = (struct cthread_arg_struct*) args; //cast to usable format
-	sem_wait(&mutex);
 	FILE* logfile = fopen(arguments->consLog, "ab+"); //open logfile, create if nonexistant
-	sem_post(&mutex);
 
 	char* hostnameBuf = malloc(MAX_NAME_LENGTH);
-	//char* ipStr;
+	char* ipStr = malloc(MAX_IP_LENGTH);
 	int hostnamesResolved = 0;
 	while (*(arguments->filesServiced) < *(arguments->numFiles) || *(arguments->itemsInBuffer) > 0) { //while producer threads are still working or the buffer is not empty
 		while (*(arguments->itemsInBuffer) == 0 && *(arguments->filesServiced) < *(arguments->numFiles)); //wait while buffer is empty and producers are still working
 		sem_wait(&mutex);
-		//strncpy(hostnameBuf, arguments->buffer + 255 * (*(arguments->itemsInBuffer) - 1), MAX_NAME_LENGTH); //copy hostname to hostnameBuf
-		//printf("Processing hostname: %s\n", hostnameBuf);
-		//dnslookup(hostnameBuf, ipStr, 255);
-		//fprintf(logfile, "%s, %s", hostnameBuf, ipStr);
-		hostnamesResolved++;
-		*(arguments->itemsInBuffer) = *(arguments->itemsInBuffer) - 1; //update number of items in buffer
-		printf("---->Removed item from buffer, currently %d items\n", *(arguments->itemsInBuffer));
+		if (*(arguments->itemsInBuffer) > 0) { //ensures consumer has updated info inside of lock
+			strncpy(hostnameBuf, arguments->buffer + 255 * (*(arguments->itemsInBuffer) - 1), MAX_NAME_LENGTH); //copy hostname to hostnameBuf
+			hostnameBuf[strlen(hostnameBuf) - 1] = 0; //remove newline
+			if (dnslookup(hostnameBuf, ipStr, MAX_IP_LENGTH) != 0) { //if dnslookup unsuccessful
+				fprintf(logfile, "%s, NOT_RESOLVED\n", hostnameBuf);
+			} else {
+				fprintf(logfile, "%s, %s\n", hostnameBuf, ipStr);
+				hostnamesResolved++;
+			}
+			*(arguments->itemsInBuffer) = *(arguments->itemsInBuffer) - 1; //update number of items in buffer
+		}
 		sem_post(&mutex);
 	}
 	fclose(logfile);
-	sem_wait(&mutex);
 	printf("thread <%lu> resolved %d hostnames\n", pthread_self(), hostnamesResolved);
-	sem_post(&mutex);
 	free(arguments);
 	free(hostnameBuf);
+	free(ipStr);
 	pthread_exit(NULL);
 }
 
 void* producer(void *args) {
 	struct pthread_arg_struct *arguments = (struct pthread_arg_struct*) args; //cast generic args pointer to arg struct pointer
 	int thread_filesServiced = 0;
+	char* linebuf = NULL;
 	if (arguments->currFileNum == -1) { //if thread has no file assigned
 		while (*(arguments->filesServiced) < *(arguments->numFiles)); //wait until all files have been serviced
 		free(arguments);
+		free(linebuf);
 		pthread_exit(NULL); //exit gracefully
 	}
-	char* linebuf = NULL;
 	size_t len = 0;
 	FILE* readfile;
 	sem_wait(&mutex);
@@ -59,7 +57,6 @@ void* producer(void *args) {
 	sem_post(&mutex);
 	while (*(arguments->filesServiced) < *(arguments->numFiles)) { //while there are still files to be processed
 		sem_wait(&mutex);
-		printf("thread <%lu> (PRODUCER) Processing hostnames from %s and logging to %s\n", pthread_self(), arguments->files[arguments->currFileNum], arguments->prodLog);
 		*(arguments->filesAssigned) = *(arguments->filesAssigned) + 1;
 		sem_post(&mutex);
 		readfile = fopen(arguments->files[arguments->currFileNum], "r");
@@ -68,12 +65,13 @@ void* producer(void *args) {
 		len = 0;
 		while (getline(&linebuf, &len, readfile) != -1) { //read input file line by line
 			if (len <= MAX_NAME_LENGTH) { //verify that length of hostname is valid
-				while (*(arguments->itemsInBuffer) > 9); //wait for space to open up in shared array
+				while (*(arguments->itemsInBuffer) > 9 && *(arguments->filesServiced) < *(arguments->numFiles)); //wait for space to open up in shared array
 				sem_wait(&mutex);
-				fprintf(logfile, "%s", linebuf);
-				//strncpy(arguments->buffer + 255 * *(arguments->itemsInBuffer), linebuf, len); //if space exists in buffer, print hostname to proper "slot"
-				*(arguments->itemsInBuffer) = *(arguments->itemsInBuffer) + 1; //increment itemsInBuffer accordingly
-				printf("---->Added item to buffer, currently %d items\n", *(arguments->itemsInBuffer));
+				if (*(arguments->itemsInBuffer) <= 9) { //make sure producer working with updated info in lock
+					fprintf(logfile, "%s", linebuf);
+					strncpy(arguments->buffer + 255 * *(arguments->itemsInBuffer), linebuf, len); //if space exists in buffer, print hostname to proper "slot"
+					*(arguments->itemsInBuffer) = *(arguments->itemsInBuffer) + 1; //increment itemsInBuffer accordingly
+				}
 				sem_post(&mutex);
 			} else {
 				fprintf(stderr, "Hostname length of %lu is longer than maximum allowed length %d\n", len, MAX_NAME_LENGTH);
@@ -82,18 +80,18 @@ void* producer(void *args) {
 		}
 		sem_wait(&mutex);
 		fclose(readfile);
-		thread_filesServiced++;
-		*(arguments->filesServiced) = *(arguments->filesServiced) + 1;
-		printf("---->Serviced file, currently %d of %d serviced\n", *(arguments->filesServiced), *(arguments->numFiles));
+		if (*(arguments->filesServiced) < *(arguments->numFiles)) {
+			*(arguments->filesServiced) = *(arguments->filesServiced) + 1;
+			thread_filesServiced++;
+		}
 		arguments->currFileNum = *(arguments->filesServiced);
 		sem_post(&mutex);
 	}
-
 	fclose(logfile);
-	free(linebuf);
 	sem_wait(&mutex);
 	printf("thread <%lu> serviced %d files\n", pthread_self(), thread_filesServiced);
 	sem_post(&mutex);
+	free(linebuf);
 	free(arguments);
 	pthread_exit(NULL);
 }
@@ -154,14 +152,10 @@ int main(int argc, char *argv[]) {
 	for (int i = 0; i < numProd; ++i) {
 		pthread_join(producer_threads[i], NULL); //wait for producer threads to finish
 	}
-	printf("Producer threads finished.\n");
 	for (int i = 0; i < numCons; ++i) {pthread_join(consumer_threads[i], NULL);}
-	printf("Consumer threads finished.\n");
-
-	//for (int i = 0; i < 10; ++i) {printf("%s", buf + 255 * i);} //print shared array contents before exiting (debugging purposes)
 
 	gettimeofday(&endTime, NULL); //record end time
-	printf("./multi-lookup: total time is %ld microseconds\n", (endTime.tv_sec * 1000000 + endTime.tv_usec - startTime.tv_sec * 1000000 - startTime.tv_usec));
+	printf("./multi-lookup: total time is %f seconds\n", ((endTime.tv_sec * 1000000 + endTime.tv_usec - startTime.tv_sec * 1000000 - startTime.tv_usec)/1000000.0));
 	sem_destroy(&mutex); //destroy mutex
 	free(buf);
 	return 0;
